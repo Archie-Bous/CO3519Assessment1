@@ -2,11 +2,10 @@ import cv2
 import numpy as np
 import seaborn as sns
 import os
-
+from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 from skimage.feature import hog
-from skimage import exposure
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
@@ -17,7 +16,6 @@ import joblib
 
 # Load Haar Cascade for face detection
 face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-
 radius = 3
 n_points = 8 * radius
 # Function to load images, detect faces, and extract cropped face regions
@@ -25,20 +23,28 @@ def load_and_detect_faces(folder_path):
     images = []
     labels = []
     for label in os.listdir(folder_path):
+        # get the label path for the folder
         label_path = os.path.join(folder_path, label)
         if os.path.isdir(label_path):
             for img_file in os.listdir(label_path):
+                # get the image path
                 img_path = os.path.join(label_path, img_file)
+                # read in image as greyscale
                 img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                # if it's part of the personal dataset read in in colour
+                if "Archie_emotionpics" in img_path:
+                    img = cv2.imread(img_path, cv2.IMREAD_ANYCOLOR)
                 if img is not None:
+                    # extract the face using Haar cascade
                     faces = face_cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
                     for (x, y, w, h) in faces:
                         face_region = img[y:y+h, x:x+w]
+                        # add face region image and label to array
                         images.append(face_region)
                         labels.append(label)
     return images, labels
 
-# Function to extract HOG features from the cropped face images
+# Function to extract HOG features from the face images
 def extract_hog_features(images):
     hog_features = []
     for img in images:
@@ -68,10 +74,16 @@ def extract_lbp_features(images):
     return np.array(lbp_features)
 
 # Function to preprocess, detect face, extract HOG features, and predict emotion
-def predict_emotion_hog(image_path, model):
+def predict_emotion(image_path, model):
     plt.cla()
+    
     # Load the image in grayscale
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+
+    # if it's one of the colour pics then read it in as colour image
+    if "Archie_emotionpics" in image_path:
+        img = cv2.imread(image_path, cv2.IMREAD_ANYCOLOR)
+
     if img is None:
         raise ValueError("Image not found or could not be loaded.")
 
@@ -84,20 +96,21 @@ def predict_emotion_hog(image_path, model):
     (x, y, w, h) = faces[0]
     face_region = img[y:y+h, x:x+w]
     face_region = cv2.resize(face_region, (256, 256))
+
     # Extract HOG features from the detected face region
     hog_features = extract_hog_features([face_region])[0]
-    #hog_features = hog_features.reshape(1, -1)
 
+    # Extract LBP features from the detected face region
     lbp_features = extract_lbp_features([face_region])[0]
-    #lbp_features = lbp_features.reshape(1, -1)
 
+    # combination of hog and lbp features
     combined_features = np.hstack([hog_features, lbp_features])
     combined_features = combined_features.reshape(1, -1)
-    scaler = joblib.load('scaler.pkl')
-    scaled_features = scaler.transform(combined_features)
 
-    # Reshape features for model input
-    #features = features.reshape(1, -1)
+    # load in the fitted scaler
+    scaler = joblib.load('scaler.pkl')
+    # extract the scaled features by tranforming the combined features by the scaler
+    scaled_features = scaler.transform(combined_features)
 
     # Predict the expression using the model
     predicted_expression = model.predict(scaled_features)[0]
@@ -119,25 +132,23 @@ def predict_emotion_hog(image_path, model):
     plt.title("Original Input Image")
     plt.axis("off")
 
-    # 2nd subplot: Face detected with bounding box
+    # subplot shwoing Face detected with bounding box
     plt.subplot(1, 3, 2)
     plt.imshow(img_with_box)
     plt.title(f"Predicted Expression: {predicted_expression}")
     plt.axis("off")
 
-    # 3rd subplot: HOG features
-    #plt.subplot(1, 3, 3)
-    #plt.imshow(hog_image, cmap='gray')
-    #plt.title("HOG Features")
-    #plt.axis("off")
-
     plt.show()
 
-# Set paths for training and testing folders
-#train_folder_path = "JAFFE-[70,30]\\JAFFE-[70,30]\\train"
-#test_folder_path = "JAFFE-[70,30]\\JAFFE-[70,30]\\test"
-train_folder_path = "JAFFE-[70,30]/train"
-test_folder_path = "JAFFE-[70,30]/test"
+# paths for the different training and testing folders
+train_folder_path = "CK_dataset/train"
+test_folder_path = "CK_dataset/test"
+
+#train_folder_path = "JAFFE-[70,30]/train"
+#test_folder_path = "JAFFE-[70,30]/test"
+
+#train_folder_path = "Archie_emotionpics/train"
+#test_folder_path = "Archie_emotionpics/test"
 
 
 print("training ...\n")
@@ -146,6 +157,7 @@ scaler = StandardScaler()
 X_train_faces, y_train = load_and_detect_faces(train_folder_path)
 hog_train_features = extract_hog_features(X_train_faces)
 lbp_train_features = extract_lbp_features(X_train_faces)
+
 combined_train_features = np.hstack([hog_train_features,lbp_train_features])
 X_train_combined_features = scaler.fit_transform(combined_train_features)
 joblib.dump(scaler, 'scaler.pkl')
@@ -160,6 +172,8 @@ X_test_combined_features = scaler.transform(combined_test_features)
 
 # create SVM pipeline for scaling and rbf kernel
 svm_classifier = make_pipeline(StandardScaler(), SVC(kernel='rbf', C=5, gamma='scale'))
+
+
 svm_classifier.fit(X_train_combined_features, y_train)
 y_test_pred = svm_classifier.predict(X_test_combined_features)
 
@@ -187,7 +201,7 @@ ax = sns.heatmap(conf_matrix, annot=True, cmap="BuGn", xticklabels=class_names, 
 plt.xlabel("Predicted Class")
 plt.ylabel("True Class")
 plt.title("Confusion Matrix")
-#plt.show()
+plt.show()
 
 # Calculate accuracy for each emotion
 emotion_accuracies = {}
@@ -206,8 +220,14 @@ for emotion, acc in emotion_accuracies.items():
     print(f"{emotion}: {acc:.2f}%")
 # Print classification report
 print(classification_report(y_test, y_test_pred))
+image_path = ["CK_dataset/test/Neutral/2.jpg", 'CK_dataset/test/Fear/0.jpg', 'CK_dataset/test/Anger/2.jpg']
+for i in range(3):
+    predict_emotion(image_path[i], svm_classifier)
 
-for i in range(5):
-    pass
-    #image_path = f"C:\\Users\Archie\\OneDrive - UCLan\\Desktop\\Documents\\Uni stuff\\Year4\\Artificial intelligence\\week6\\lab work\\CK_dataset\\CK_dataset\\train\Anger\\{18+i}.jpg"
-    #predict_emotion_hog(image_path, svm_classifier)
+# parameters = {'kernel':('linear', 'rbf'), 'C':[1, 10]}
+# svc = SVC()
+# clf = GridSearchCV(svc, parameters)
+# clf.fit(X_train_faces, y_train)
+
+# # Output the best parameters and sorted CV results keys
+# print("Best Parameters:", clf.best_params_)
